@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Logician</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="icon" type="image/png" href="knight.png" />
+  </head>
+  <body>
+    <aside>
+      <!-- Sidebar heading -->
+      <h2>Algorithms</h2>
+
+      <!-- Collapsible section: Maze algorithms -->
+      <div class="section">
+        <!-- Button to toggle Maze section -->
+        <button class="collapsible">Maze</button>
+
+        <div class="content">
+          <button id="maze-solver-dfs">Maze Solver DFS</button>
+          <button id="maze-solver-bfs">Maze Solver BFS</button>
+        </div>
+      </div>
+
+      <!-- Collapsible section: Graph algorithms -->
+      <div class="section">
+        <button class="collapsible">Graphs</button>
+        <div class="content">
+          <button class="coming-soon">DFS</button>
+          <button class="coming-soon">BFS</button>
+          <button class="coming-soon">Dijkstra's Algorithm</button>
+        </div>
+      </div>
+
+      <!-- Collapsible section: Sorting algorithms -->
+      <div class="section">
+        <button class="collapsible">Sorting</button>
+        <div class="content">
+          <button class="coming-soon">Bubble Sort</button>
+          <button class="coming-soon">Insertion Sort</button>
+          <button class="coming-soon">Selection Sort</button>
+          <button class="coming-soon">Merge Sort</button>
+          <button class="coming-soon">Quick Sort</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <!-- Header containing the title -->
+      <header>
+        <img
+          src="knight.png"
+          style="
+            display: inline-block;
+            vertical-align: middle;
+            height: 35px;
+            width: 35px;
+            margin-right: 10px;
+          "
+          alt="knight"
+        />
+        <h1 class="logo">Logician</h1>
+        <hr class="title-separator" />
+      </header>
+
+      <div id="algoDisplay">
+      </div>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

@@ -1,0 +1,130 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Arial", sans-serif;
+  min-height: 100vh;
+  display: flex;
+  background: linear-gradient(
+    135deg,
+    #fff9d1 0%,
+    #fff3b8 100%
+  ); /* slightly darker than original */
+  color: #333; /* default text color */
+}
+
+aside {
+  width: 220px;
+  background: rgba(255, 255, 255, 0.4);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  border-right: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Sidebar heading */
+aside h2 {
+  font-size: 1.5rem;
+  margin-bottom: 15px;
+}
+
+.collapsible {
+  background: rgba(220, 236, 7, 0.1);
+  border: 1.5px solid rgba(0, 0, 0, 0); /* invisible border always there */
+  padding: 10px;
+  cursor: pointer;
+  font-size: 1rem;
+  border-radius: 10px;
+  transition: background 0.2s, border-color 0.5s;
+}
+
+.collapsible:hover {
+  border: 1.5px solid rgba(0, 0, 0, 1);
+}
+
+.collapsible::after {
+  content: "▼";
+  font-size: 0.8rem;
+  display: inline-block;
+  transition: transform 0.2s;
+}
+
+.collapsible.active::after {
+  transform: rotate(-180deg);
+}
+
+.content {
+  max-height: 0; /* hidden by default */
+  overflow: hidden; /* hide overflow */
+  transition: max-height 0.3s ease; /* smooth expand/collapse */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 10px;
+}
+
+.content button {
+  background: rgba(255, 255, 255, 0.4);
+  border: 1.5px solid rgba(0, 0, 0, 0); /* invisible border always there */
+  padding: 8px;
+  border-radius: 5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s, border 0.5s;
+}
+
+.content button:hover {
+  border: 1.5px solid rgba(0, 0, 0, 1);
+}
+
+.content .coming-soon {
+  opacity: 0.4; /* faded look */
+  cursor: not-allowed; /* non-clickable */
+}
+
+main {
+  flex: 1; /* take remaining width */
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+}
+
+header {
+  padding-bottom: 10px;
+}
+
+.logo {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #333;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+  text-align: left;
+}
+
+.title-separator {
+  margin-top: 5px;
+  border: 0;
+  border-bottom: 2px solid rgba(0, 0, 0, 0.1);
+  width: 70%;
+}
+
+#algoDisplay {
+  flex: 1; /* take remaining vertical space */
+  background: rgba(255, 255, 255, 0.4); /* semi-transparent overlay */
+  border: 2px dashed rgba(0, 0, 0, 0.1); /* subtle dashed border */
+  display: flex;
+  /* justify-content: center;  */
+  /* align-items: center;  */
+  border-radius: 10px; /* rounded corners */
+  font-size: 1.2rem;
+  color: #333;
+  box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.1); /* soft shadow for depth */
+  text-align: center;
+  /* padding: 20px; */
+}
