@@ -120,7 +120,7 @@ export function Controls({
     (algorithmInfo.timeComplexity || algorithmInfo.spaceComplexity || algorithmInfo.keyIdea);
 
   return (
-    <section className="panel controls-panel controls-panel--enhanced media-player">
+    <section className="controls-panel controls-panel--enhanced media-player">
       <div className="media-player__scrubber">
         <div className="seek-bar-container">
           <input
@@ -301,12 +301,12 @@ export function Controls({
           </button>
           <button
             type="button"
-            className={`media-player__icon-btn media-player__icon-btn--primary ${
-              isRunning ? "is-live" : ""
-            }`}
+            id="btn-play-pause"
+            className={`media-player__icon-btn media-player__icon-btn--primary${isRunning ? " is-live" : ""}`}
             onClick={onTogglePlayback}
             title={playPauseLabel}
             aria-label={playPauseLabel}
+            aria-pressed={isRunning}
           >
             {playPauseIcon}
           </button>
