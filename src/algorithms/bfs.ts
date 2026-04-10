@@ -33,6 +33,9 @@ export const bfsAlgorithm: AlgorithmPlugin = {
     "Queue-driven exploration that guarantees the shortest path on an unweighted grid.",
   behaviorNote:
     "BFS terminates when the queue is exhausted, even if no path exists. Each playback tick paints one full frontier layer.",
+  timeComplexity: "O(V + E)",
+  spaceComplexity: "O(V)",
+  keyIdea: "Explore all neighbors at the current depth before moving deeper. Guarantees the shortest path in an unweighted graph.",
   *run(grid: Cell[][]): Generator<AlgorithmStep, AlgorithmResult, void> {
     const start = findCellByType(grid, "start");
     const end = findCellByType(grid, "end");

@@ -17,6 +17,7 @@ export type RunnerStatus =
 export interface RunnerSnapshot {
   status: RunnerStatus;
   stepCount: number;
+  totalSteps: number;
   exploredCount: number;
   pathLength: number;
   metricLabel: string;
@@ -33,6 +34,7 @@ interface RunnerListeners {
 const DEFAULT_SNAPSHOT: RunnerSnapshot = {
   status: "idle",
   stepCount: 0,
+  totalSteps: 0,
   exploredCount: 0,
   pathLength: 0,
   metricLabel: "Path / Order",
@@ -41,41 +43,42 @@ const DEFAULT_SNAPSHOT: RunnerSnapshot = {
   algorithmId: null,
 };
 
+export type GridPlaybackFrame = {
+  grid: Cell[][];
+  snapshot: RunnerSnapshot;
+};
+
+export type GridPlaybackBundle = {
+  frames: GridPlaybackFrame[];
+  steps: AlgorithmStep[];
+  milestoneSteps: number[];
+};
+
 export class VisualizationRunner {
   private baseGrid: Cell[][] = [];
   private displayGrid: Cell[][] = [];
-  private generator: Generator<AlgorithmStep, AlgorithmResult, void> | null =
-    null;
   private executedSteps: AlgorithmStep[] = [];
-  private gridHistory: Cell[][][] = [];
-  private snapshotHistory: RunnerSnapshot[] = [];
   private algorithm: AlgorithmPlugin | null = null;
   private timerId: number | null = null;
-  private speed = 110;
+  private speed = 400;
+  private totalSteps = 0;
   private snapshot: RunnerSnapshot = DEFAULT_SNAPSHOT;
+  private playbackBundle: GridPlaybackBundle | null = null;
+  private autoPlayActive = false;
 
   constructor(private readonly listeners: RunnerListeners) {}
 
-  configure(baseGrid: Cell[][], algorithm: AlgorithmPlugin): void {
+  hydrateFromBundle(
+    baseGrid: Cell[][],
+    algorithm: AlgorithmPlugin,
+    bundle: GridPlaybackBundle,
+  ): void {
     this.pause();
     this.baseGrid = cloneGrid(baseGrid);
-    this.displayGrid = clearTraversalState(cloneGrid(baseGrid));
-    this.generator = null;
-    this.executedSteps = [];
     this.algorithm = algorithm;
-    this.snapshot = {
-      status: "ready",
-      stepCount: 0,
-      exploredCount: 0,
-      pathLength: 0,
-      metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-      foundPath: null,
-      message: `Ready to run ${algorithm.label}.`,
-      algorithmId: algorithm.id,
-    };
-    this.gridHistory = [cloneGrid(this.displayGrid)];
-    this.snapshotHistory = [{ ...this.snapshot }];
-    this.emit();
+    this.playbackBundle = bundle;
+    this.totalSteps = bundle.steps.length;
+    this.applyPlaybackFrame(0);
   }
 
   setSpeed(speed: number): void {
@@ -87,7 +90,7 @@ export class VisualizationRunner {
   }
 
   start(): void {
-    if (!this.algorithm) {
+    if (!this.algorithm || !this.playbackBundle) {
       return;
     }
 
@@ -95,11 +98,11 @@ export class VisualizationRunner {
       return;
     }
 
-    this.ensureGenerator();
-    if (!this.generator) {
+    if (this.snapshot.status === "completed" && this.snapshot.stepCount >= this.totalSteps) {
       return;
     }
 
+    this.autoPlayActive = true;
     this.snapshot = {
       ...this.snapshot,
       status: "running",
@@ -110,6 +113,7 @@ export class VisualizationRunner {
   }
 
   pause(): void {
+    this.autoPlayActive = false;
     if (this.timerId !== null) {
       window.clearTimeout(this.timerId);
       this.timerId = null;
@@ -126,6 +130,7 @@ export class VisualizationRunner {
   }
 
   stop(): void {
+    this.autoPlayActive = false;
     this.pause();
     this.snapshot = {
       ...this.snapshot,
@@ -135,38 +140,23 @@ export class VisualizationRunner {
     this.emitSnapshot();
   }
 
-  reset(baseGrid?: Cell[][]): void {
+  reset(): void {
     this.pause();
-    if (baseGrid) {
-      this.baseGrid = cloneGrid(baseGrid);
+    if (!this.playbackBundle || !this.algorithm) {
+      return;
     }
-    this.displayGrid = clearTraversalState(cloneGrid(this.baseGrid));
-    this.generator = null;
-    this.executedSteps = [];
+    this.applyPlaybackFrame(0);
     this.snapshot = {
-      status: this.algorithm ? "ready" : "idle",
-      stepCount: 0,
-      exploredCount: 0,
-      pathLength: 0,
-      metricLabel: this.algorithm?.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-      foundPath: null,
-      message: this.algorithm
-        ? `Board reset. ${this.algorithm.label} is ready.`
-        : DEFAULT_SNAPSHOT.message,
-      algorithmId: this.algorithm?.id ?? null,
+      ...this.snapshot,
+      status: "ready",
+      message: `Board reset. ${this.algorithm.label} is ready.`,
     };
-    this.gridHistory = [cloneGrid(this.displayGrid)];
-    this.snapshotHistory = [{ ...this.snapshot }];
-    this.emit();
+    this.listeners.onGridUpdate(cloneGrid(this.displayGrid));
+    this.emitSnapshot();
   }
 
   stepForward(): void {
-    if (!this.algorithm) {
-      return;
-    }
-
-    this.ensureGenerator();
-    if (!this.generator) {
+    if (!this.algorithm || !this.playbackBundle) {
       return;
     }
 
@@ -174,11 +164,15 @@ export class VisualizationRunner {
       this.pause();
     }
 
-    this.consumeNextStep();
+    if (this.snapshot.stepCount >= this.totalSteps) {
+      return;
+    }
+
+    this.applyPlaybackFrame(this.snapshot.stepCount + 1);
   }
 
   stepBackward(): void {
-    if (!this.algorithm) {
+    if (!this.algorithm || !this.playbackBundle) {
       return;
     }
 
@@ -186,92 +180,67 @@ export class VisualizationRunner {
       this.pause();
     }
 
-    if (this.executedSteps.length === 0) {
+    if (this.snapshot.stepCount <= 0) {
       return;
     }
 
-    this.executedSteps.pop();
-    if (this.gridHistory.length > 1) {
-      this.gridHistory.pop();
+    this.applyPlaybackFrame(this.snapshot.stepCount - 1);
+  }
+
+  seekToStep(targetStep: number): void {
+    if (!this.algorithm || !this.playbackBundle) {
+      return;
     }
-    if (this.snapshotHistory.length > 1) {
-      this.snapshotHistory.pop();
-    }
-    this.rebuildGeneratorFromHistory();
-    this.restorePreviousState();
+
+    this.pause();
+    const clamped = Math.max(0, Math.min(Math.round(targetStep), this.totalSteps));
+    this.applyPlaybackFrame(clamped);
   }
 
   dispose(): void {
     this.pause();
   }
 
-  private ensureGenerator(): void {
-    if (!this.generator && this.algorithm) {
-      const cleanGrid = clearTraversalState(cloneGrid(this.baseGrid));
-      this.generator = this.algorithm.run(cleanGrid);
-    }
-  }
 
-  private rebuildGeneratorFromHistory(): void {
-    if (!this.algorithm) {
-      this.generator = null;
-      return;
-    }
-
-    const cleanGrid = clearTraversalState(cloneGrid(this.baseGrid));
-    this.generator = this.algorithm.run(cleanGrid);
-
-    for (let index = 0; index < this.executedSteps.length; index += 1) {
-      const result = this.generator.next();
-      if (result.done) {
-        break;
-      }
-    }
-  }
 
   private schedule(): void {
     this.timerId = window.setTimeout(() => {
       this.consumeNextStep();
-      if (this.snapshot.status === "running") {
+      if (this.autoPlayActive && this.snapshot.stepCount < this.totalSteps) {
         this.schedule();
+      } else {
+        this.autoPlayActive = false;
+        if (this.timerId !== null) {
+          window.clearTimeout(this.timerId);
+          this.timerId = null;
+        }
       }
     }, this.speed);
   }
 
   private consumeNextStep(): void {
-    if (!this.generator) {
+    if (!this.playbackBundle) {
       return;
     }
 
-    const result = this.generator.next();
-    if (result.done) {
-      this.finish(result.value);
+    if (this.snapshot.stepCount >= this.totalSteps) {
       return;
     }
 
-    this.executedSteps.push(result.value);
-    this.rebuildFromHistory(result.value);
+    this.applyPlaybackFrame(this.snapshot.stepCount + 1);
   }
 
-  private finish(result: AlgorithmResult): void {
-    this.pause();
-    this.snapshot = {
-      ...this.snapshot,
-      status: "completed",
-      exploredCount: countUniqueExploredNodes(this.executedSteps),
-      pathLength:
-        result.metricValue ??
-        deriveMetricValue(this.executedSteps, this.algorithm?.id) ??
-        result.path.length,
-      foundPath: result.found,
-      message:
-        result.message ??
-        (result.found
-          ? "Path found. Replay or edit the grid to explore another route."
-          : "Search terminated without finding a path."),
-    };
-    this.snapshotHistory[this.snapshotHistory.length - 1] = { ...this.snapshot };
-    this.emitSnapshot();
+  private applyPlaybackFrame(index: number): void {
+    if (!this.playbackBundle || !this.algorithm) {
+      return;
+    }
+
+    const clamped = Math.max(0, Math.min(index, this.totalSteps));
+    const frame = this.playbackBundle.frames[clamped];
+    this.executedSteps = this.playbackBundle.steps.slice(0, clamped);
+    this.displayGrid = cloneGrid(frame.grid);
+    this.snapshot = { ...frame.snapshot };
+    this.emit();
   }
 
   private emit(): void {
@@ -282,76 +251,116 @@ export class VisualizationRunner {
   private emitSnapshot(): void {
     this.listeners.onSnapshotUpdate({ ...this.snapshot });
   }
+}
 
-  private rebuildFromHistory(latestStep?: AlgorithmStep): void {
-    let nextGrid = clearTraversalState(cloneGrid(this.baseGrid));
-    const effectiveStep = latestStep ?? this.executedSteps.at(-1);
-    const exploredCount = countUniqueExploredNodes(this.executedSteps);
-    const pathLength =
-      deriveMetricValue(this.executedSteps, this.algorithm?.id) ??
-      countPathNodes(this.executedSteps);
-
-    for (const step of this.executedSteps) {
-      nextGrid = applyStep(nextGrid, step);
+export function buildGridPlaybackBundle(
+  baseGrid: Cell[][],
+  algorithm: AlgorithmPlugin,
+): GridPlaybackBundle {
+  const clean = clearTraversalState(cloneGrid(baseGrid));
+  const gen = algorithm.run(clean);
+  const steps: AlgorithmStep[] = [];
+  let result: AlgorithmResult | null = null;
+  while (true) {
+    const r = gen.next();
+    if (r.done) {
+      result = r.value;
+      break;
     }
-
-    this.displayGrid = nextGrid;
-    this.snapshot = {
-      ...this.snapshot,
-      status:
-        this.executedSteps.length === 0
-          ? this.algorithm
-            ? "ready"
-            : "idle"
-          : this.snapshot.status === "completed"
-            ? "paused"
-            : this.snapshot.status,
-      stepCount: this.executedSteps.length,
-      exploredCount,
-      pathLength,
-      metricLabel: this.algorithm?.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-      foundPath: null,
-      message: effectiveStep
-        ? describeStep(effectiveStep)
-        : this.algorithm
-          ? `Ready to run ${this.algorithm.label}.`
-          : DEFAULT_SNAPSHOT.message,
-    };
-    this.gridHistory.push(cloneGrid(this.displayGrid));
-    this.snapshotHistory.push({ ...this.snapshot });
-    this.emit();
+    steps.push(r.value);
   }
 
-  private restorePreviousState(): void {
-    const previousGrid = this.gridHistory.at(-1);
-    const previousSnapshot = this.snapshotHistory.at(-1);
+  const totalSteps = steps.length;
+  const frames: GridPlaybackFrame[] = [];
 
-    if (!previousGrid || !previousSnapshot) {
-      this.displayGrid = clearTraversalState(cloneGrid(this.baseGrid));
-      this.snapshot = {
-        status: this.algorithm ? "ready" : "idle",
+  if (totalSteps === 0) {
+    const grid = clearTraversalState(cloneGrid(baseGrid));
+    const snapshot: RunnerSnapshot = {
+      status: "completed",
+      stepCount: 0,
+      totalSteps: 0,
+      exploredCount: 0,
+      pathLength:
+        result?.metricValue ??
+        deriveMetricValue([], algorithm.id) ??
+        result?.path.length ??
+        0,
+      metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
+      foundPath: result?.found ?? null,
+      message:
+        result?.message ??
+        (result?.found
+          ? "Path found. Replay or edit the grid to explore another route."
+          : "Search terminated without finding a path."),
+      algorithmId: algorithm.id,
+    };
+    frames.push({ grid: cloneGrid(grid), snapshot });
+    return { frames, steps: [], milestoneSteps: [] };
+  }
+
+  for (let i = 0; i <= totalSteps; i++) {
+    let grid = clearTraversalState(cloneGrid(baseGrid));
+    for (let j = 0; j < i; j++) {
+      grid = applyStep(grid, steps[j]!);
+    }
+    const slice = steps.slice(0, i);
+    const exploredCount = countUniqueExploredNodes(slice);
+    const pathLength =
+      deriveMetricValue(slice, algorithm.id) ?? countPathNodes(slice);
+
+    let snapshot: RunnerSnapshot;
+
+    if (i === 0) {
+      snapshot = {
+        status: "ready",
         stepCount: 0,
+        totalSteps,
         exploredCount: 0,
         pathLength: 0,
-        metricLabel: this.algorithm?.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
+        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
         foundPath: null,
-        message: this.algorithm
-          ? `Ready to run ${this.algorithm.label}.`
-          : DEFAULT_SNAPSHOT.message,
-        algorithmId: this.algorithm?.id ?? null,
+        message: `Ready to run ${algorithm.label}.`,
+        algorithmId: algorithm.id,
+      };
+    } else if (i < totalSteps) {
+      const eff = steps[i - 1]!;
+      snapshot = {
+        status: "paused",
+        stepCount: i,
+        totalSteps,
+        exploredCount,
+        pathLength,
+        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
+        foundPath: null,
+        message: describeStep(eff),
+        algorithmId: algorithm.id,
       };
     } else {
-      this.displayGrid = cloneGrid(previousGrid);
-      this.snapshot = {
-        ...previousSnapshot,
-        status:
-          previousSnapshot.status === "completed" ? "paused" : previousSnapshot.status,
-        foundPath: null,
+      snapshot = {
+        status: "completed",
+        stepCount: totalSteps,
+        totalSteps,
+        exploredCount: countUniqueExploredNodes(steps),
+        pathLength:
+          result!.metricValue ??
+          deriveMetricValue(steps, algorithm.id) ??
+          result!.path.length,
+        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
+        foundPath: result!.found,
+        message:
+          result!.message ??
+          (result!.found
+            ? "Path found. Replay or edit the grid to explore another route."
+            : "Search terminated without finding a path."),
+        algorithmId: algorithm.id,
       };
     }
 
-    this.emit();
+    frames.push({ grid: cloneGrid(grid), snapshot });
   }
+
+  const milestoneSteps = deriveMilestoneSteps(steps);
+  return { frames, steps, milestoneSteps };
 }
 
 function applyStep(grid: Cell[][], step: AlgorithmStep): Cell[][] {
@@ -473,4 +482,15 @@ function deriveMetricValue(
   _algorithmId: string | null | undefined,
 ): number | null {
   return null;
+}
+
+function deriveMilestoneSteps(steps: AlgorithmStep[]): number[] {
+  const milestones: number[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step.type === "path" || step.type === "fail") {
+      milestones.push(i + 1);
+    }
+  }
+  return milestones;
 }

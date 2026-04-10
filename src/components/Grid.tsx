@@ -61,21 +61,7 @@ export function Grid({
   };
 
   return (
-    <section className="panel visualization-panel">
-      <div className="panel__header">
-        <div>
-          <p className="eyebrow">Grid State</p>
-          <h2>Interactive maze surface</h2>
-          <p className="grid-hint">Click cells to toggle walls.</p>
-        </div>
-        <div className="legend">
-          <LegendSwatch label="Visited" tone="visited" />
-          <LegendSwatch label="Path" tone="path" />
-          <LegendSwatch label="Wall" tone="wall" />
-          <LegendSwatch label="Current" tone="current" />
-        </div>
-      </div>
-
+    <section className="panel visualization-panel visualization-panel--stage-only">
       <div className="grid-stage" ref={stageRef}>
         <div className="grid-frame">
           <div className="grid-board" style={boardStyle}>
@@ -87,11 +73,17 @@ export function Grid({
                   cell.weight > 1 ? "is-weighted" : ""
                 } ${
                   cell.visited ? "is-visited" : ""
-                } ${cell.queued ? "is-queued" : ""} ${cell.path ? "is-path" : ""} ${
+                } ${
+                  cell.queued ? "is-queued" : ""
+                } ${
+                  cell.path ? "is-path" : ""
+                } ${
                   cell.cycle ? "is-cycle" : ""
                 } ${
                   cell.current ? "is-current" : ""
-                } ${cell.backtracked ? "is-backtracked" : ""} ${
+                } ${
+                  cell.backtracked ? "is-backtracked" : ""
+                } ${
                   cell.failed ? "is-failed" : ""
                 }`}
                 aria-label={`Cell ${cell.row}, ${cell.col} (${cell.type})`}
@@ -121,23 +113,4 @@ function getCellLabel(cell: Cell): string {
   }
 
   return "";
-}
-
-function LegendSwatch({
-  label,
-  tone,
-}: {
-  label: string;
-  tone:
-    | "visited"
-    | "path"
-    | "wall"
-    | "current";
-}) {
-  return (
-    <div className="legend__item">
-      <span className={`legend__swatch legend__swatch--${tone}`} />
-      <span>{label}</span>
-    </div>
-  );
 }

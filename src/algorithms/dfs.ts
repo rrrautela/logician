@@ -18,6 +18,9 @@ export const dfsAlgorithm: AlgorithmPlugin = {
     "Stack-like recursive traversal that drills deeply before backtracking.",
   behaviorNote:
     "This mirrors the original recursive DFS feel: cells get numbered by depth, and backtracking clears them again. With no path, it can keep cycling forever.",
+  timeComplexity: "O(V + E)",
+  spaceComplexity: "O(V)",
+  keyIdea: "Explore as deep as possible along each branch before backtracking. Uses a stack (or recursion) to track the exploration frontier.",
   *run(grid: Cell[][]): Generator<AlgorithmStep, AlgorithmResult, void> {
     const start = findCellByType(grid, "start");
     const end = findCellByType(grid, "end");

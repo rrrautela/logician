@@ -31,5 +31,8 @@ export interface AlgorithmPlugin {
   description: string;
   behaviorNote: string;
   metricLabel?: string;
+  timeComplexity?: string;
+  spaceComplexity?: string;
+  keyIdea?: string;
   run(grid: Cell[][]): Generator<AlgorithmStep, AlgorithmResult, void>;
 }

@@ -1,8 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ArrayRunnerSnapshot } from "../engine/arrayRunner";
 import type { RunnerSnapshot } from "../engine/runner";
 import type { AlgorithmPlugin } from "../types/algorithm";
 import type { ArrayAlgorithmPlugin } from "../types/arrayAlgorithm";
+
+type SpeedRate = { label: string; ms: number };
+
+const SPEED_RATES: SpeedRate[] = [
+  { label: "0.75x", ms: 533 },
+  { label: "1x", ms: 400 },
+  { label: "1.5x", ms: 267 },
+  { label: "2x", ms: 200 },
+];
+
+interface AlgorithmInfo {
+  timeComplexity: string | null;
+  spaceComplexity: string | null;
+  keyIdea: string | null;
+}
 
 interface ControlsProps {
   algorithm: AlgorithmPlugin | ArrayAlgorithmPlugin;
@@ -13,11 +28,14 @@ interface ControlsProps {
   onReset: () => void;
   onPreviousStep: () => void;
   onNextStep: () => void;
+  onSeek: (step: number) => void;
   onSpeedChange: (speed: number) => void;
   onGenerateRandom?: () => void;
   presets?: Array<{ id: string; label: string }>;
   selectedPresetId?: string;
   onSelectPreset?: (presetId: string) => void;
+  milestoneSteps?: number[];
+  algorithmInfo?: AlgorithmInfo;
 }
 
 export function Controls({
@@ -29,304 +47,316 @@ export function Controls({
   onReset,
   onPreviousStep,
   onNextStep,
+  onSeek,
   onSpeedChange,
   onGenerateRandom,
   presets,
   selectedPresetId,
   onSelectPreset,
+  milestoneSteps = [],
+  algorithmInfo,
 }: ControlsProps) {
-  const [notesOpen, setNotesOpen] = useState(false);
-  const [metricPulseKey, setMetricPulseKey] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [hoverStep, setHoverStep] = useState<number | null>(null);
+  const [tooltipX, setTooltipX] = useState(0);
+  const seekBarRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    setMetricPulseKey((value) => value + 1);
-  }, [snapshot.stepCount, snapshot.exploredCount, snapshot.pathLength, snapshot.status]);
-
-  const playbackLabel = snapshot.status === "running" ? "Pause" : "Start";
-  const playbackIcon = snapshot.status === "running" ? "||" : ">";
+  const currentStep = snapshot.stepCount;
+  const totalSteps = snapshot.totalSteps;
   const generateLabel =
     algorithm.family === "array"
       ? "Load Example Array"
       : "Generate Random Grid";
-  const previousDisabled = snapshot.stepCount === 0;
-  const resetDisabled = snapshot.stepCount === 0 && snapshot.status !== "completed";
-  const speedProgress = ((speed - 1) / (1000 - 1)) * 100;
-  const speedLabel = getSpeedDescriptor(speed);
-  const totalSteps = "totalSteps" in snapshot ? snapshot.totalSteps : 0;
-  const progress = totalSteps > 0 ? Math.min(100, (snapshot.stepCount / totalSteps) * 100) : 0;
-  const recentMessages = "recentMessages" in snapshot ? snapshot.recentMessages : [];
+  const previousDisabled = currentStep === 0;
+  const resetDisabled = currentStep === 0 && snapshot.status !== "completed";
+  const scrubDisabled = totalSteps <= 0;
+  const scrubMax = Math.max(0, totalSteps);
+  const scrubValue = scrubDisabled ? 0 : Math.min(currentStep, scrubMax);
+  const scrubProgress =
+    scrubMax > 0 ? Math.min(100, (currentStep / scrubMax) * 100) : 0;
+  const nextDisabled =
+    snapshot.status === "running" ||
+    (totalSteps > 0 && currentStep >= totalSteps);
+  const isRunning = snapshot.status === "running";
+  const playPauseIcon = isRunning ? "⏸" : "▶";
+  const playPauseLabel = isRunning ? "Pause" : "Play";
 
-  const metrics = useMemo(
-    () => [
-      {
-        icon: "#",
-        label: "Steps",
-        value: snapshot.stepCount,
-        tone: "steps",
-      },
-      {
-        icon: "@",
-        label: "Explored",
-        value: snapshot.exploredCount,
-        tone: "explored",
-      },
-      {
-        icon: "*",
-        label: snapshot.metricLabel,
-        value: snapshot.pathLength,
-        tone: "result",
-      },
-      {
-        icon: "!",
-        label: "Status",
-        value: snapshot.status,
-        tone: "status",
-        isStatus: true,
-      },
-    ],
-    [snapshot],
+  const speedLabel = nearestSpeedLabel(speed);
+
+  // Hover preview for the seek bar
+  const handleSeekMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLInputElement>) => {
+      const bar = event.currentTarget;
+      const rect = bar.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const ratio = Math.max(0, Math.min(1, x / rect.width));
+      const step = Math.round(ratio * scrubMax);
+      setHoverStep(step);
+      setTooltipX(x);
+    },
+    [scrubMax],
   );
 
+  const handleSeekMouseLeave = useCallback(() => {
+    setHoverStep(null);
+  }, []);
+
+  // Close info overlay when clicking outside
+  const infoRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!infoOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (infoRef.current && !infoRef.current.contains(e.target as Node)) {
+        setInfoOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [infoOpen]);
+
+  const hasInfo =
+    algorithmInfo &&
+    (algorithmInfo.timeComplexity || algorithmInfo.spaceComplexity || algorithmInfo.keyIdea);
+
   return (
-    <section className="panel controls-panel controls-panel--enhanced">
-      <div className="panel__header">
-        <div>
-          <p className="eyebrow">Control Center</p>
-          <h2>{algorithm.label}</h2>
-        </div>
-        <span className={`status-pill status-pill--${snapshot.status}`}>
-          {snapshot.status}
-        </span>
-      </div>
-
-      <p className="panel__description">{algorithm.description}</p>
-
-      {"intuition" in algorithm && algorithm.intuition && (
-        <div className="info-card why-card">
-          <div className="info-card__header">
-            <h3>Why It Works</h3>
-          </div>
-          <p><strong>Intuition:</strong> {algorithm.intuition}</p>
-          <p><strong>Key Idea:</strong> {algorithm.keyIdea}</p>
-          <p><strong>Time:</strong> {algorithm.timeComplexity}</p>
-          <p><strong>Space:</strong> {algorithm.spaceComplexity}</p>
-        </div>
-      )}
-
-      {totalSteps > 0 && (
-        <div className="info-card progress-card">
-          <div className="info-card__header">
-            <h3>Progress</h3>
-            <span>{snapshot.stepCount} / {totalSteps}</span>
-          </div>
-          <div className="progress-bar" aria-hidden="true">
-            <div className="progress-bar__fill" style={{ width: `${progress}%` }} />
-          </div>
-        </div>
-      )}
-
-      <div className="metric-grid metric-grid--enhanced">
-        {metrics.map((metric, index) => (
-          <article
-            key={`${metric.label}-${metricPulseKey}`}
-            className={`metric-card metric-card--${metric.tone} ${
-              index === 2 ? "metric-card--featured" : ""
-            }`}
-          >
-            <span className="metric-card__icon">{metric.icon}</span>
-            <span>{metric.label}</span>
-            <strong className={metric.isStatus ? `status status--${snapshot.status}` : ""}>
-              {metric.value}
-            </strong>
-          </article>
-        ))}
-      </div>
-
-      <div className="control-cluster">
-        <div className="control-cluster__header">
-          <span>Playback</span>
-          <small>{speedLabel}</small>
-        </div>
-        <div className="player-bar">
-          <button
-            type="button"
-            className="control-button control-button--secondary"
-            onClick={onPreviousStep}
-            disabled={previousDisabled}
-            title="Previous Step"
-            aria-label="Previous Step"
-            data-tooltip="Previous Step"
-          >
-            <span className="control-button__icon">{"<<"}</span>
-            <span>Previous</span>
-          </button>
-
-          <button
-            type="button"
-            className={`control-button control-button--primary ${
-              snapshot.status === "running" ? "is-live" : ""
-            }`}
-            onClick={onTogglePlayback}
-            title={playbackLabel === "Pause" ? "Pause Execution" : "Start Execution"}
-            aria-label={playbackLabel === "Pause" ? "Pause Execution" : "Start Execution"}
-            data-tooltip={playbackLabel === "Pause" ? "Pause Execution" : "Start Execution"}
-          >
-            <span className="control-button__icon">{playbackIcon}</span>
-            <span>{playbackLabel}</span>
-          </button>
-
-          <button
-            type="button"
-            className="control-button control-button--secondary"
-            onClick={onNextStep}
-            disabled={snapshot.status === "running"}
-            title="Next Step"
-            aria-label="Next Step"
-            data-tooltip="Next Step"
-          >
-            <span className="control-button__icon">{">>"}</span>
-            <span>Next</span>
-          </button>
-
-          <button
-            type="button"
-            className="control-button control-button--ghost"
-            onClick={onReset}
-            disabled={resetDisabled}
-            title="Reset Visualization"
-            aria-label="Reset Visualization"
-            data-tooltip="Reset Visualization"
-          >
-            <span className="control-button__icon">{"[]"}</span>
-            <span>Reset</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="control-cluster">
-        <div className="control-cluster__header">
-          <span>Generation</span>
-          <small>Fresh test case</small>
-        </div>
-        <div className="generate-stack">
-          <button
-            type="button"
-            className="generate-button"
-            onClick={onGenerate}
-            title={generateLabel}
-            aria-label={generateLabel}
-            data-tooltip={generateLabel}
-          >
-            <span className="control-button__icon">{"@@"}</span>
-            <span>{generateLabel}</span>
-          </button>
-          {onGenerateRandom && (
-            <button
-              type="button"
-              className="control-button control-button--secondary"
-              onClick={onGenerateRandom}
-              title="Generate Random Input"
-              aria-label="Generate Random Input"
-              data-tooltip="Generate Random Input"
+    <section className="panel controls-panel controls-panel--enhanced media-player">
+      <div className="media-player__scrubber">
+        <div className="seek-bar-container">
+          <input
+            ref={seekBarRef}
+            type="range"
+            className="seek-bar media-player__seek"
+            min={0}
+            max={scrubDisabled ? 1 : scrubMax}
+            step={1}
+            value={scrubValue}
+            disabled={scrubDisabled}
+            style={{ ["--slider-progress" as string]: `${scrubProgress}%` }}
+            onChange={(event) => onSeek(Number(event.target.value))}
+            onMouseMove={handleSeekMouseMove}
+            onMouseLeave={handleSeekMouseLeave}
+            aria-label="Seek to step"
+            aria-valuemin={0}
+            aria-valuemax={totalSteps}
+            aria-valuenow={currentStep}
+            aria-valuetext={`Step ${currentStep} of ${totalSteps}`}
+          />
+          {/* Milestone markers */}
+          {!scrubDisabled && scrubMax > 0 && milestoneSteps.length > 0 && (
+            <div className="seek-bar__milestones" aria-hidden="true">
+              {milestoneSteps.map((step) => (
+                <span
+                  key={step}
+                  className="seek-bar__milestone"
+                  style={{ left: `${(step / scrubMax) * 100}%` }}
+                  title={`Milestone at step ${step}`}
+                />
+              ))}
+            </div>
+          )}
+          {/* Hover tooltip */}
+          {hoverStep !== null && !scrubDisabled && (
+            <div
+              className="seek-bar__tooltip"
+              style={{ left: `${tooltipX}px` }}
+              aria-hidden="true"
             >
-              <span className="control-button__icon">{"??"}</span>
-              <span>Generate Random Input</span>
-            </button>
+              Step {hoverStep}
+            </div>
           )}
         </div>
-        {presets && presets.length > 0 && onSelectPreset && (
-          <label className="slider-field">
-            <div className="slider-field__copy">
-              <span>Edge Case Mode</span>
-              <strong>Preset</strong>
-            </div>
-            <select
-              className="control-select"
-              value={selectedPresetId}
-              onChange={(event) => onSelectPreset(event.target.value)}
+        <div className="media-player__time" aria-hidden="true">
+          <span>{currentStep}</span>
+          <span className="media-player__time-sep">/</span>
+          <span>{totalSteps}</span>
+        </div>
+      </div>
+
+      <div className="media-player__row">
+        <div className="media-player__left">
+          <div className="media-player__left-btns">
+            <button
+              type="button"
+              className={`media-player__settings-toggle ${settingsOpen ? "is-open" : ""}`}
+              onClick={() => { setSettingsOpen((open) => !open); setInfoOpen(false); }}
+              aria-expanded={settingsOpen}
+              aria-controls="media-player-settings"
+              aria-label={settingsOpen ? "Close settings" : "Open settings"}
+              title="Settings"
             >
-              {presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
+              ⚙
+            </button>
+            {hasInfo && (
+              <button
+                type="button"
+                className={`media-player__info-toggle ${infoOpen ? "is-open" : ""}`}
+                onClick={() => { setInfoOpen((open) => !open); setSettingsOpen(false); }}
+                aria-expanded={infoOpen}
+                aria-label={infoOpen ? "Close algorithm info" : "Show algorithm info"}
+                title="Algorithm Info"
+              >
+                ℹ
+              </button>
+            )}
+          </div>
+          {settingsOpen && (
+            <div
+              id="media-player-settings"
+              className="media-player__settings"
+              role="region"
+              aria-label="Playback settings"
+            >
+              <p className="media-player__settings-title">{algorithm.label}</p>
+              <div className="media-player__aux">
+                <button
+                  type="button"
+                  className="media-player__text-btn"
+                  onClick={onGenerate}
+                  title={generateLabel}
+                  aria-label={generateLabel}
+                >
+                  {generateLabel}
+                </button>
+                {onGenerateRandom && (
+                  <button
+                    type="button"
+                    className="media-player__text-btn"
+                    onClick={onGenerateRandom}
+                    title="Random input"
+                    aria-label="Generate random input"
+                  >
+                    Random
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="media-player__text-btn"
+                  onClick={onReset}
+                  disabled={resetDisabled}
+                  title="Reset"
+                  aria-label="Reset visualization"
+                >
+                  Reset
+                </button>
+                {presets && presets.length > 0 && onSelectPreset && (
+                  <label className="media-player__preset">
+                    <span className="visually-hidden">Preset</span>
+                    <select
+                      className="control-select media-player__select"
+                      value={selectedPresetId}
+                      onChange={(event) => onSelectPreset(event.target.value)}
+                    >
+                      {presets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Bento Box Info Overlay */}
+          {infoOpen && algorithmInfo && (
+            <div
+              ref={infoRef}
+              className="bento-overlay"
+              role="region"
+              aria-label="Algorithm information"
+            >
+              {algorithmInfo.timeComplexity && (
+                <div className="bento-card">
+                  <span className="bento-card__label">Time Complexity</span>
+                  <strong className="bento-card__value">{algorithmInfo.timeComplexity}</strong>
+                </div>
+              )}
+              {algorithmInfo.spaceComplexity && (
+                <div className="bento-card">
+                  <span className="bento-card__label">Space Complexity</span>
+                  <strong className="bento-card__value">{algorithmInfo.spaceComplexity}</strong>
+                </div>
+              )}
+              {algorithmInfo.keyIdea && (
+                <div className="bento-card bento-card--wide">
+                  <span className="bento-card__label">Key Idea</span>
+                  <p className="bento-card__text">{algorithmInfo.keyIdea}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="media-player__transport" role="group" aria-label="Playback">
+          <button
+            type="button"
+            className="media-player__icon-btn"
+            onClick={onPreviousStep}
+            disabled={previousDisabled}
+            title="Previous step"
+            aria-label="Previous step"
+          >
+            ⏮
+          </button>
+          <button
+            type="button"
+            className={`media-player__icon-btn media-player__icon-btn--primary ${
+              isRunning ? "is-live" : ""
+            }`}
+            onClick={onTogglePlayback}
+            title={playPauseLabel}
+            aria-label={playPauseLabel}
+          >
+            {playPauseIcon}
+          </button>
+          <button
+            type="button"
+            className="media-player__icon-btn"
+            onClick={onNextStep}
+            disabled={nextDisabled}
+            title="Next step"
+            aria-label="Next step"
+          >
+            ⏭
+          </button>
+        </div>
+
+        <div className="media-player__right">
+          <label className="media-player__speed">
+            <span className="visually-hidden">Playback speed</span>
+            <select
+              className="control-select media-player__speed-select"
+              value={speedLabel}
+              onChange={(event) => {
+                const next = SPEED_RATES.find((r) => r.label === event.target.value);
+                if (next) {
+                  onSpeedChange(next.ms);
+                }
+              }}
+            >
+              {SPEED_RATES.map((rate) => (
+                <option key={rate.label} value={rate.label}>
+                  {rate.label}
                 </option>
               ))}
             </select>
           </label>
-        )}
-      </div>
-
-      <label className="slider-field slider-field--enhanced">
-        <div className="slider-field__copy">
-          <span>Time Per Step</span>
-          <strong>{speedLabel}</strong>
         </div>
-        <input
-          type="range"
-          min="1"
-          max="1000"
-          step="1"
-          value={speed}
-          style={{ ["--slider-progress" as string]: `${speedProgress}%` }}
-          onChange={(event) => onSpeedChange(Number(event.target.value))}
-          aria-label="Time per step"
-        />
-        <div className="slider-zones" aria-hidden="true">
-          <span>Fast (review)</span>
-          <span>Normal</span>
-          <span>Slow (learning)</span>
-        </div>
-      </label>
-
-      <div className="info-card info-card--console">
-        <div className="info-card__header">
-          <h3>Engine Feed</h3>
-          <span className="console-dot" />
-        </div>
-        <p key={`${snapshot.message}-${snapshot.stepCount}`} className="console-line">
-          {snapshot.message}
-        </p>
-        {"explanation" in snapshot && snapshot.explanation && (
-          <p className="console-line console-line--explanation">{snapshot.explanation}</p>
-        )}
-        {"decision" in snapshot && snapshot.decision && (
-          <p className="console-line console-line--decision">Decision: {snapshot.decision}</p>
-        )}
-      </div>
-
-      {recentMessages.length > 0 && (
-        <div className="info-card">
-          <div className="info-card__header">
-            <h3>Recent Actions</h3>
-          </div>
-          {recentMessages.map((message, index) => (
-            <p key={`${message}-${index}`}>{message}</p>
-          ))}
-        </div>
-      )}
-
-      <div className={`info-card info-card--accordion ${notesOpen ? "is-open" : ""}`}>
-        <button
-          type="button"
-          className="accordion-toggle"
-          onClick={() => setNotesOpen((value) => !value)}
-          aria-expanded={notesOpen}
-          aria-label="Toggle behavior notes"
-        >
-          <span>Behavior Notes</span>
-          <span>{notesOpen ? "-" : "+"}</span>
-        </button>
-        {notesOpen && <p>{algorithm.behaviorNote}</p>}
       </div>
     </section>
   );
 }
 
-function getSpeedDescriptor(speed: number): string {
-  if (speed <= 180) {
-    return "Fast (review)";
+function nearestSpeedLabel(ms: number): string {
+  let best = SPEED_RATES[0];
+  let bestDiff = Math.abs(ms - best.ms);
+  for (const rate of SPEED_RATES) {
+    const diff = Math.abs(ms - rate.ms);
+    if (diff < bestDiff) {
+      best = rate;
+      bestDiff = diff;
+    }
   }
-  if (speed <= 520) {
-    return "Normal";
-  }
-  return "Slow (learning)";
+  return best.label;
 }
