@@ -1,460 +1,250 @@
+import { SimulationRunner } from "./simulationRunner";
 import type {
   AlgorithmPlugin,
-  AlgorithmResult,
-  AlgorithmStep,
+  GridCellPatch,
+  GridAlgorithmResult,
+  GridStateDiff,
+  GridStepEvent,
 } from "../types/algorithm";
 import type { Cell } from "../types/grid";
+import type { SimulationSnapshot, StateEngine } from "../types/simulation";
 import { clearTraversalState, cloneGrid } from "../utils/grid";
 
-export type RunnerStatus =
-  | "idle"
-  | "ready"
-  | "running"
-  | "paused"
-  | "completed"
-  | "stopped";
-
-export interface RunnerSnapshot {
-  status: RunnerStatus;
-  stepCount: number;
-  totalSteps: number;
-  exploredCount: number;
-  pathLength: number;
-  metricLabel: string;
-  foundPath: boolean | null;
-  message: string;
-  algorithmId: string | null;
-}
+export type RunnerSnapshot = SimulationSnapshot;
 
 interface RunnerListeners {
   onGridUpdate: (grid: Cell[][]) => void;
   onSnapshotUpdate: (snapshot: RunnerSnapshot) => void;
 }
 
-const DEFAULT_SNAPSHOT: RunnerSnapshot = {
-  status: "idle",
-  stepCount: 0,
-  totalSteps: 0,
-  exploredCount: 0,
-  pathLength: 0,
-  metricLabel: "Path / Order",
-  foundPath: null,
-  message: "Generate or edit a grid, then start an algorithm.",
-  algorithmId: null,
-};
+const DEFAULT_MESSAGE = "Generate or edit a grid, then start an algorithm.";
 
-export type GridPlaybackFrame = {
-  grid: Cell[][];
-  snapshot: RunnerSnapshot;
-};
+export const gridStateEngine: StateEngine<Cell[][], Cell[][], GridStepEvent, GridStateDiff> = {
+  createInitialState(grid) {
+    return clearTraversalState(cloneGrid(grid));
+  },
+  deriveDiff(previousState, step) {
+    const targets = step.payload.nodes;
+    const targetKeys = new Set(targets.map(([row, col]) => `${row}:${col}`));
+    const patches: GridCellPatch[] = [];
 
-export type GridPlaybackBundle = {
-  frames: GridPlaybackFrame[];
-  steps: AlgorithmStep[];
-  milestoneSteps: number[];
+    for (const row of previousState) {
+      for (const cell of row) {
+        if (cell.current || cell.failed) {
+          patches.push({
+            row: cell.row,
+            col: cell.col,
+            changes: {
+              current: false,
+              failed: false,
+            },
+          });
+        }
+      }
+    }
+
+    for (const row of previousState) {
+      for (const cell of row) {
+        const key = `${cell.row}:${cell.col}`;
+        if (!targetKeys.has(key)) {
+          continue;
+        }
+
+        switch (step.type) {
+          case "enqueue":
+            patches.push({
+              row: cell.row,
+              col: cell.col,
+              changes: { queued: true },
+            });
+            break;
+          case "visit":
+            patches.push({
+              row: cell.row,
+              col: cell.col,
+              changes: {
+                visited: true,
+                queued: false,
+                current: true,
+                backtracked: false,
+                stepNumber: step.payload.stepNumber ?? cell.stepNumber,
+              },
+            });
+            break;
+          case "path":
+            patches.push({
+              row: cell.row,
+              col: cell.col,
+              changes: {
+                path: true,
+                current: true,
+                queued: false,
+                visited: true,
+                backtracked: false,
+                stepNumber: step.payload.stepNumber ?? cell.stepNumber,
+              },
+            });
+            break;
+          case "backtrack":
+            patches.push({
+              row: cell.row,
+              col: cell.col,
+              changes: {
+                current: false,
+                backtracked: true,
+                stepNumber: step.payload.stepNumber ?? cell.stepNumber,
+              },
+            });
+            break;
+          case "fail":
+            patches.push({
+              row: cell.row,
+              col: cell.col,
+              changes: {
+                failed: true,
+                current: true,
+              },
+            });
+            break;
+        }
+      }
+    }
+
+    return {
+      type: "grid_patch",
+      payload: {
+        patches,
+      },
+    };
+  },
+  applyDiff(previousState, diff) {
+    if (diff.payload.patches.length === 0) {
+      return previousState;
+    }
+
+    const nextGrid = [...previousState];
+    const updatedRows = new Map<number, Cell[]>();
+
+    for (const patch of diff.payload.patches) {
+      const currentRow = updatedRows.get(patch.row) ?? [...nextGrid[patch.row]!];
+      const previousCell = currentRow[patch.col]!;
+      currentRow[patch.col] = {
+        ...previousCell,
+        ...patch.changes,
+      };
+      updatedRows.set(patch.row, currentRow);
+    }
+
+    for (const [rowIndex, row] of updatedRows) {
+      nextGrid[rowIndex] = row;
+    }
+
+    return nextGrid;
+  },
 };
 
 export class VisualizationRunner {
-  private baseGrid: Cell[][] = [];
-  private displayGrid: Cell[][] = [];
-  private executedSteps: AlgorithmStep[] = [];
-  private algorithm: AlgorithmPlugin | null = null;
-  private timerId: number | null = null;
-  private speed = 400;
-  private totalSteps = 0;
-  private snapshot: RunnerSnapshot = DEFAULT_SNAPSHOT;
-  private playbackBundle: GridPlaybackBundle | null = null;
-  private autoPlayActive = false;
+  private readonly runner: SimulationRunner<
+    Cell[][],
+    Cell[][],
+    GridStepEvent,
+    GridStateDiff,
+    GridAlgorithmResult
+  >;
 
-  constructor(private readonly listeners: RunnerListeners) {}
+  constructor(listeners: RunnerListeners) {
+    this.runner = new SimulationRunner({
+      onStateUpdate: listeners.onGridUpdate,
+      onSnapshotUpdate: listeners.onSnapshotUpdate,
+    }, {
+      stateEngine: gridStateEngine,
+      deriveSnapshot: ({ algorithm, status, stepCount, totalSteps, currentStep, steps, result, milestoneSteps, performance }) => {
+        const exploredCount = countUniqueExploredNodes(steps);
+        const metricValue = countPathNodes(steps);
 
-  hydrateFromBundle(
-    baseGrid: Cell[][],
-    algorithm: AlgorithmPlugin,
-    bundle: GridPlaybackBundle,
-  ): void {
-    this.pause();
-    this.baseGrid = cloneGrid(baseGrid);
-    this.algorithm = algorithm;
-    this.playbackBundle = bundle;
-    this.totalSteps = bundle.steps.length;
-    this.applyPlaybackFrame(0);
+        return {
+          status,
+          stepCount,
+          totalSteps,
+          exploredCount,
+          metricValue:
+            status === "completed"
+              ? result.metricValue ?? metricValue
+              : metricValue,
+          metricLabel: algorithm.metadata.metricLabel ?? "Path Length",
+          foundResult: status === "completed" ? result.found : null,
+          message: deriveGridMessage({
+            algorithmLabel: algorithm.metadata.label,
+            status,
+            currentStep,
+            resultMessage: result.message,
+            totalSteps,
+            stepCount,
+          }),
+          explanation: currentStep?.explanation,
+          decision: currentStep?.decision,
+          insightTags: currentStep?.insightTags ?? [],
+          algorithmId: algorithm.id,
+          recentMessages: steps.slice(-5).map((step) => step.explanation.what),
+          recentEvents: buildRecentEvents(steps, milestoneSteps),
+          milestoneSteps,
+          performance,
+        };
+      },
+      deriveMilestoneSteps: (steps) =>
+        steps.flatMap((step, index) =>
+          step.type === "path" || step.type === "fail" ? [index + 1] : [],
+        ),
+      checkpointInterval: 20,
+    });
+  }
+
+  load(grid: Cell[][], algorithm: AlgorithmPlugin): void {
+    this.runner.load(grid, algorithm);
   }
 
   setSpeed(speed: number): void {
-    this.speed = speed;
-    if (this.snapshot.status === "running") {
-      this.pause();
-      this.start();
-    }
+    this.runner.setSpeed(speed);
   }
 
   start(): void {
-    if (!this.algorithm || !this.playbackBundle) {
-      return;
-    }
-
-    if (this.snapshot.status === "running") {
-      return;
-    }
-
-    if (this.snapshot.status === "completed" && this.snapshot.stepCount >= this.totalSteps) {
-      return;
-    }
-
-    this.autoPlayActive = true;
-    this.snapshot = {
-      ...this.snapshot,
-      status: "running",
-      message: `Running ${this.algorithm.label}...`,
-    };
-    this.emitSnapshot();
-    this.schedule();
+    this.runner.start();
   }
 
   pause(): void {
-    this.autoPlayActive = false;
-    if (this.timerId !== null) {
-      window.clearTimeout(this.timerId);
-      this.timerId = null;
-    }
-
-    if (this.snapshot.status === "running") {
-      this.snapshot = {
-        ...this.snapshot,
-        status: "paused",
-        message: "Playback paused.",
-      };
-      this.emitSnapshot();
-    }
-  }
-
-  stop(): void {
-    this.autoPlayActive = false;
-    this.pause();
-    this.snapshot = {
-      ...this.snapshot,
-      status: "stopped",
-      message: "Playback stopped. Reset to clear the board.",
-    };
-    this.emitSnapshot();
+    this.runner.pause();
   }
 
   reset(): void {
-    this.pause();
-    if (!this.playbackBundle || !this.algorithm) {
-      return;
-    }
-    this.applyPlaybackFrame(0);
-    this.snapshot = {
-      ...this.snapshot,
-      status: "ready",
-      message: `Board reset. ${this.algorithm.label} is ready.`,
-    };
-    this.listeners.onGridUpdate(cloneGrid(this.displayGrid));
-    this.emitSnapshot();
+    this.runner.reset();
   }
 
   stepForward(): void {
-    if (!this.algorithm || !this.playbackBundle) {
-      return;
-    }
-
-    if (this.snapshot.status === "running") {
-      this.pause();
-    }
-
-    if (this.snapshot.stepCount >= this.totalSteps) {
-      return;
-    }
-
-    this.applyPlaybackFrame(this.snapshot.stepCount + 1);
+    this.runner.stepForward();
   }
 
   stepBackward(): void {
-    if (!this.algorithm || !this.playbackBundle) {
-      return;
-    }
-
-    if (this.snapshot.status === "running") {
-      this.pause();
-    }
-
-    if (this.snapshot.stepCount <= 0) {
-      return;
-    }
-
-    this.applyPlaybackFrame(this.snapshot.stepCount - 1);
+    this.runner.stepBackward();
   }
 
-  seekToStep(targetStep: number): void {
-    if (!this.algorithm || !this.playbackBundle) {
-      return;
-    }
-
-    this.pause();
-    const clamped = Math.max(0, Math.min(Math.round(targetStep), this.totalSteps));
-    this.applyPlaybackFrame(clamped);
+  seekToStep(step: number): void {
+    this.runner.seek(step);
   }
 
   dispose(): void {
-    this.pause();
+    this.runner.dispose();
   }
 
-
-
-  private schedule(): void {
-    this.timerId = window.setTimeout(() => {
-      this.consumeNextStep();
-      if (this.autoPlayActive && this.snapshot.stepCount < this.totalSteps) {
-        this.schedule();
-      } else {
-        this.autoPlayActive = false;
-        if (this.timerId !== null) {
-          window.clearTimeout(this.timerId);
-          this.timerId = null;
-        }
-      }
-    }, this.speed);
+  getMilestoneSteps(): number[] {
+    return this.runner.getMilestoneSteps();
   }
 
-  private consumeNextStep(): void {
-    if (!this.playbackBundle) {
-      return;
-    }
-
-    if (this.snapshot.stepCount >= this.totalSteps) {
-      return;
-    }
-
-    this.applyPlaybackFrame(this.snapshot.stepCount + 1);
-  }
-
-  private applyPlaybackFrame(index: number): void {
-    if (!this.playbackBundle || !this.algorithm) {
-      return;
-    }
-
-    const clamped = Math.max(0, Math.min(index, this.totalSteps));
-    const frame = this.playbackBundle.frames[clamped];
-    this.executedSteps = this.playbackBundle.steps.slice(0, clamped);
-    this.displayGrid = cloneGrid(frame.grid);
-    this.snapshot = { ...frame.snapshot };
-    this.emit();
-  }
-
-  private emit(): void {
-    this.listeners.onGridUpdate(cloneGrid(this.displayGrid));
-    this.emitSnapshot();
-  }
-
-  private emitSnapshot(): void {
-    this.listeners.onSnapshotUpdate({ ...this.snapshot });
+  peekNextStep(): GridStepEvent | null {
+    return this.runner.peekNextStep();
   }
 }
 
-export function buildGridPlaybackBundle(
-  baseGrid: Cell[][],
-  algorithm: AlgorithmPlugin,
-): GridPlaybackBundle {
-  const clean = clearTraversalState(cloneGrid(baseGrid));
-  const gen = algorithm.run(clean);
-  const steps: AlgorithmStep[] = [];
-  let result: AlgorithmResult | null = null;
-  while (true) {
-    const r = gen.next();
-    if (r.done) {
-      result = r.value;
-      break;
-    }
-    steps.push(r.value);
-  }
-
-  const totalSteps = steps.length;
-  const frames: GridPlaybackFrame[] = [];
-
-  if (totalSteps === 0) {
-    const grid = clearTraversalState(cloneGrid(baseGrid));
-    const snapshot: RunnerSnapshot = {
-      status: "completed",
-      stepCount: 0,
-      totalSteps: 0,
-      exploredCount: 0,
-      pathLength:
-        result?.metricValue ??
-        deriveMetricValue([], algorithm.id) ??
-        result?.path.length ??
-        0,
-      metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-      foundPath: result?.found ?? null,
-      message:
-        result?.message ??
-        (result?.found
-          ? "Path found. Replay or edit the grid to explore another route."
-          : "Search terminated without finding a path."),
-      algorithmId: algorithm.id,
-    };
-    frames.push({ grid: cloneGrid(grid), snapshot });
-    return { frames, steps: [], milestoneSteps: [] };
-  }
-
-  for (let i = 0; i <= totalSteps; i++) {
-    let grid = clearTraversalState(cloneGrid(baseGrid));
-    for (let j = 0; j < i; j++) {
-      grid = applyStep(grid, steps[j]!);
-    }
-    const slice = steps.slice(0, i);
-    const exploredCount = countUniqueExploredNodes(slice);
-    const pathLength =
-      deriveMetricValue(slice, algorithm.id) ?? countPathNodes(slice);
-
-    let snapshot: RunnerSnapshot;
-
-    if (i === 0) {
-      snapshot = {
-        status: "ready",
-        stepCount: 0,
-        totalSteps,
-        exploredCount: 0,
-        pathLength: 0,
-        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-        foundPath: null,
-        message: `Ready to run ${algorithm.label}.`,
-        algorithmId: algorithm.id,
-      };
-    } else if (i < totalSteps) {
-      const eff = steps[i - 1]!;
-      snapshot = {
-        status: "paused",
-        stepCount: i,
-        totalSteps,
-        exploredCount,
-        pathLength,
-        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-        foundPath: null,
-        message: describeStep(eff),
-        algorithmId: algorithm.id,
-      };
-    } else {
-      snapshot = {
-        status: "completed",
-        stepCount: totalSteps,
-        totalSteps,
-        exploredCount: countUniqueExploredNodes(steps),
-        pathLength:
-          result!.metricValue ??
-          deriveMetricValue(steps, algorithm.id) ??
-          result!.path.length,
-        metricLabel: algorithm.metricLabel ?? DEFAULT_SNAPSHOT.metricLabel,
-        foundPath: result!.found,
-        message:
-          result!.message ??
-          (result!.found
-            ? "Path found. Replay or edit the grid to explore another route."
-            : "Search terminated without finding a path."),
-        algorithmId: algorithm.id,
-      };
-    }
-
-    frames.push({ grid: cloneGrid(grid), snapshot });
-  }
-
-  const milestoneSteps = deriveMilestoneSteps(steps);
-  return { frames, steps, milestoneSteps };
-}
-
-function applyStep(grid: Cell[][], step: AlgorithmStep): Cell[][] {
-  const targets = getStepTargets(step);
-  const targetKeys = new Set(targets.map(([row, col]) => `${row}:${col}`));
-
-  return grid.map((row) =>
-    row.map((cell) => {
-      const key = `${cell.row}:${cell.col}`;
-      const isTarget = targetKeys.has(key);
-      const nextCell = {
-        ...cell,
-        current: false,
-        failed: false,
-      };
-
-      if (!isTarget) {
-        return nextCell;
-      }
-
-      switch (step.type) {
-        case "enqueue":
-          return {
-            ...nextCell,
-            queued: true,
-          };
-        case "visit":
-          return {
-            ...nextCell,
-            visited: true,
-            queued: false,
-            current: true,
-            stepNumber: step.stepNumber ?? nextCell.stepNumber,
-          };
-        case "path":
-          return {
-            ...nextCell,
-            path: true,
-            cycle: false,
-            current: true,
-            queued: false,
-            visited: true,
-            stepNumber: step.stepNumber ?? nextCell.stepNumber,
-          };
-        case "backtrack":
-          return {
-            ...nextCell,
-            visited: false,
-            queued: false,
-            path: false,
-            cycle: false,
-            current: false,
-            backtracked: false,
-            stepNumber: null,
-          };
-        case "fail":
-          return {
-            ...nextCell,
-            failed: true,
-            current: true,
-          };
-      }
-    }),
-  );
-}
-
-function describeStep(step: AlgorithmStep): string {
-  const targets = getStepTargets(step);
-  const [row, col] = targets[0] ?? [0, 0];
-  switch (step.type) {
-    case "enqueue":
-      return `Queued (${row}, ${col}) for exploration.`;
-    case "visit":
-      return targets.length > 1
-        ? `BFS frontier expanded across ${targets.length} cells in one layer.`
-        : `Visiting cell (${row}, ${col}).`;
-    case "path":
-      return `Tracing final path through (${row}, ${col}).`;
-    case "backtrack":
-      return `Backtracking from (${row}, ${col}).`;
-    case "fail":
-      return "DFS is cycling in failure mode because no route to the end exists.";
-  }
-}
-
-function getStepTargets(step: AlgorithmStep): [number, number][] {
-  if (step.nodes?.length) {
-    return step.nodes;
-  }
-
-  return step.node ? [step.node] : [];
-}
-
-function countUniqueExploredNodes(steps: AlgorithmStep[]): number {
+function countUniqueExploredNodes(steps: GridStepEvent[]): number {
   const explored = new Set<string>();
 
   for (const step of steps) {
@@ -462,7 +252,7 @@ function countUniqueExploredNodes(steps: AlgorithmStep[]): number {
       continue;
     }
 
-    for (const [row, col] of getStepTargets(step)) {
+    for (const [row, col] of step.payload.nodes) {
       explored.add(`${row}:${col}`);
     }
   }
@@ -470,27 +260,66 @@ function countUniqueExploredNodes(steps: AlgorithmStep[]): number {
   return explored.size;
 }
 
-function countPathNodes(steps: AlgorithmStep[]): number {
+function countPathNodes(steps: GridStepEvent[]): number {
   return steps.reduce(
-    (count, step) => count + (step.type === "path" ? getStepTargets(step).length : 0),
+    (count, step) => count + (step.type === "path" ? step.payload.nodes.length : 0),
     0,
   );
 }
 
-function deriveMetricValue(
-  _steps: AlgorithmStep[],
-  _algorithmId: string | null | undefined,
-): number | null {
-  return null;
+function deriveGridMessage({
+  algorithmLabel,
+  status,
+  currentStep,
+  resultMessage,
+  totalSteps,
+  stepCount,
+}: {
+  algorithmLabel: string;
+  status: RunnerSnapshot["status"];
+  currentStep: GridStepEvent | null;
+  resultMessage?: string;
+  totalSteps: number;
+  stepCount: number;
+}): string {
+  if (totalSteps === 0) {
+    return resultMessage ?? DEFAULT_MESSAGE;
+  }
+
+  if (status === "ready" && stepCount === 0) {
+    return `Ready to run ${algorithmLabel}.`;
+  }
+
+  if (status === "running") {
+    return currentStep?.explanation.what ?? `Running ${algorithmLabel}...`;
+  }
+
+  if (status === "completed") {
+    return resultMessage ?? `${algorithmLabel} completed.`;
+  }
+
+  if (status === "paused") {
+    return currentStep?.explanation.what ?? "Playback paused.";
+  }
+
+  return DEFAULT_MESSAGE;
 }
 
-function deriveMilestoneSteps(steps: AlgorithmStep[]): number[] {
-  const milestones: number[] = [];
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (step.type === "path" || step.type === "fail") {
-      milestones.push(i + 1);
-    }
-  }
-  return milestones;
+function buildRecentEvents(
+  steps: GridStepEvent[],
+  milestoneSteps: number[],
+): RunnerSnapshot["recentEvents"] {
+  const milestoneSet = new Set(milestoneSteps);
+  const startIndex = Math.max(0, steps.length - 8);
+
+  return steps.slice(startIndex).map((step, index) => {
+    const stepIndex = startIndex + index + 1;
+    return {
+      index: stepIndex,
+      type: step.type,
+      summary: step.explanation.what,
+      insightTags: step.insightTags ?? [],
+      isMilestone: milestoneSet.has(stepIndex),
+    };
+  });
 }

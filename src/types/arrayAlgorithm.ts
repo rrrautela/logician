@@ -1,7 +1,12 @@
 import type { ArrayData } from "./array";
+import type {
+  AlgorithmPlugin as BaseAlgorithmPlugin,
+  SimulationResult,
+  StepEvent,
+} from "./simulation";
 
-export type ArrayAction =
-  | "checking"
+export type ArrayEventType =
+  | "compare"
   | "move_left"
   | "move_right"
   | "found"
@@ -11,16 +16,12 @@ export type ArrayAction =
   | "shrink"
   | "update_max";
 
-export interface ArrayAlgorithmStep {
-  left: number;
-  right: number;
-  currentSum: number;
-  action: ArrayAction;
-  found: boolean;
-  arraySnapshot: number[];
-  target: number;
+export interface ArrayEventPayload {
+  left?: number;
+  right?: number;
+  currentSum?: number;
+  target?: number;
   maxLength?: number;
-  window?: number[];
   k?: number;
   index?: number;
   value?: number;
@@ -29,29 +30,25 @@ export interface ArrayAlgorithmStep {
   maxSum?: number;
   bestStart?: number;
   bestEnd?: number;
-  explanation: string;
-  decision?: string;
 }
 
-export interface ArrayAlgorithmResult {
-  found: boolean;
+export type ArrayStepEvent = StepEvent<
+  ArrayEventType,
+  ArrayEventPayload,
+  {
+    left?: number | null;
+    right?: number | null;
+    currentIndex?: number | null;
+  }
+>;
+
+export interface ArrayAlgorithmResult extends SimulationResult {
   pair: [number, number] | null;
   visitedCount: number;
-  terminated: boolean;
-  message?: string;
-  metricValue?: number;
 }
 
-export interface ArrayAlgorithmPlugin {
-  id: string;
-  label: string;
-  family: string;
-  description: string;
-  behaviorNote: string;
-  metricLabel?: string;
-  intuition?: string;
-  keyIdea?: string;
-  timeComplexity?: string;
-  spaceComplexity?: string;
-  run(arrayData: ArrayData): Generator<ArrayAlgorithmStep, ArrayAlgorithmResult, void>;
-}
+export type ArrayAlgorithmPlugin = BaseAlgorithmPlugin<
+  ArrayData,
+  ArrayStepEvent,
+  ArrayAlgorithmResult
+>;

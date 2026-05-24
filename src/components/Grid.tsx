@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Cell } from "../types/grid";
 
 interface GridProps {
@@ -66,37 +66,56 @@ export function Grid({
         <div className="grid-frame">
           <div className="grid-board" style={boardStyle}>
             {grid.flat().map((cell) => (
-              <button
+              <GridCellView
                 key={`${cell.row}-${cell.col}`}
-                type="button"
-                className={`grid-cell ${cell.type} ${
-                  cell.weight > 1 ? "is-weighted" : ""
-                } ${
-                  cell.visited ? "is-visited" : ""
-                } ${
-                  cell.queued ? "is-queued" : ""
-                } ${
-                  cell.path ? "is-path" : ""
-                } ${
-                  cell.cycle ? "is-cycle" : ""
-                } ${
-                  cell.current ? "is-current" : ""
-                } ${
-                  cell.backtracked ? "is-backtracked" : ""
-                } ${
-                  cell.failed ? "is-failed" : ""
-                }`}
-                aria-label={`Cell ${cell.row}, ${cell.col} (${cell.type})`}
-                onClick={() => onEditCell(cell.row, cell.col)}
-              >
-                <span>{getCellLabel(cell)}</span>
-              </button>
+                cell={cell}
+                onEditCell={onEditCell}
+              />
             ))}
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+const GridCellView = memo(function GridCellView({
+  cell,
+  onEditCell,
+}: {
+  cell: Cell;
+  onEditCell: (row: number, col: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={getCellClassName(cell)}
+      aria-label={`Cell ${cell.row}, ${cell.col} (${cell.type})`}
+      onClick={() => onEditCell(cell.row, cell.col)}
+    >
+      <span>{getCellLabel(cell)}</span>
+    </button>
+  );
+});
+
+function getCellClassName(cell: Cell): string {
+  return `grid-cell ${cell.type} ${
+    cell.weight > 1 ? "is-weighted" : ""
+  } ${
+    cell.visited ? "is-visited" : ""
+  } ${
+    cell.queued ? "is-queued" : ""
+  } ${
+    cell.path ? "is-path" : ""
+  } ${
+    cell.cycle ? "is-cycle" : ""
+  } ${
+    cell.current ? "is-current" : ""
+  } ${
+    cell.backtracked ? "is-backtracked" : ""
+  } ${
+    cell.failed ? "is-failed" : ""
+  }`;
 }
 
 function getCellLabel(cell: Cell): string {

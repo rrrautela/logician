@@ -1,4 +1,5 @@
-import type { ArrayVisualState } from "../engine/arrayRunner";
+import { memo } from "react";
+import type { ArrayVisualState } from "../types/array";
 
 interface ArrayPanelProps {
   arrayState: ArrayVisualState;
@@ -9,7 +10,7 @@ export function ArrayPanel({ arrayState }: ArrayPanelProps) {
     nums,
     left,
     right,
-    action,
+    eventType,
     found,
     foundIndices,
     maxLength,
@@ -21,9 +22,9 @@ export function ArrayPanel({ arrayState }: ArrayPanelProps) {
     changedIndices,
   } = arrayState;
   const isSlidingWindowMode =
-    action === "expand" || action === "shrink" || action === "update_max" || maxLength > 0;
+    eventType === "expand" || eventType === "shrink" || maxLength > 0;
   const isKadaneMode =
-    action === "extend" || action === "restart" || maxSum !== null;
+    eventType === "extend" || eventType === "restart" || maxSum !== null;
 
   return (
     <section className="panel visualization-panel visualization-panel--stage-only">
@@ -50,34 +51,20 @@ export function ArrayPanel({ arrayState }: ArrayPanelProps) {
             const isCurrentIndex = currentIndex === index;
 
             return (
-              <div
+              <ArrayItemView
                 key={`${value}-${index}`}
-                className={`array-item ${
-                  isKadaneMode
-                    ? isInActiveSubarray
-                      ? "is-window"
-                      : ""
-                    : isInWindow
-                      ? "is-window"
-                      : ""
-                } ${isKadaneMode && isInBestSubarray ? "is-best" : ""} ${isLeft || isCurrentIndex ? "is-left" : ""} ${isRight ? "is-right" : ""} ${isFound ? "is-found" : ""} ${changedIndices.includes(index) ? "is-changed" : ""}`}
-              >
-                <span className="array-item__pointer">
-                  {isKadaneMode
-                    ? isCurrentIndex
-                      ? "I"
-                      : ""
-                    : isLeft && isRight
-                      ? "L/R"
-                      : isLeft
-                        ? "L"
-                        : isRight
-                          ? "R"
-                          : ""}
-                </span>
-                <strong>{value}</strong>
-                <small>{index}</small>
-              </div>
+                value={value}
+                index={index}
+                isKadaneMode={isKadaneMode}
+                isInActiveSubarray={isInActiveSubarray}
+                isInBestSubarray={isInBestSubarray}
+                isInWindow={isInWindow}
+                isLeft={isLeft}
+                isRight={isRight}
+                isFound={isFound}
+                isCurrentIndex={isCurrentIndex}
+                isChanged={changedIndices.includes(index)}
+              />
             );
           })}
         </div>
@@ -85,3 +72,53 @@ export function ArrayPanel({ arrayState }: ArrayPanelProps) {
     </section>
   );
 }
+
+const ArrayItemView = memo(function ArrayItemView({
+  value,
+  index,
+  isKadaneMode,
+  isInActiveSubarray,
+  isInBestSubarray,
+  isInWindow,
+  isLeft,
+  isRight,
+  isFound,
+  isCurrentIndex,
+  isChanged,
+}: {
+  value: number;
+  index: number;
+  isKadaneMode: boolean;
+  isInActiveSubarray: boolean;
+  isInBestSubarray: boolean;
+  isInWindow: boolean;
+  isLeft: boolean;
+  isRight: boolean;
+  isFound: boolean;
+  isCurrentIndex: boolean;
+  isChanged: boolean;
+}) {
+  return (
+    <div
+      className={`array-item ${
+        isKadaneMode ? (isInActiveSubarray ? "is-window" : "") : isInWindow ? "is-window" : ""
+      } ${isKadaneMode && isInBestSubarray ? "is-best" : ""} ${isLeft || isCurrentIndex ? "is-left" : ""} ${isRight ? "is-right" : ""} ${isFound ? "is-found" : ""} ${isChanged ? "is-changed" : ""}`}
+    >
+      <span className="array-item__pointer">
+        {isKadaneMode
+          ? isCurrentIndex
+            ? "I"
+            : ""
+          : isLeft && isRight
+            ? "L/R"
+            : isLeft
+              ? "L"
+              : isRight
+                ? "R"
+                : ""}
+      </span>
+      <strong>{value}</strong>
+      <small>{index}</small>
+    </div>
+  );
+});

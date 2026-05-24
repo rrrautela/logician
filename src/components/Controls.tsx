@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { ArrayRunnerSnapshot } from "../engine/arrayRunner";
-import type { RunnerSnapshot } from "../engine/runner";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AlgorithmPlugin } from "../types/algorithm";
 import type { ArrayAlgorithmPlugin } from "../types/arrayAlgorithm";
+import type { GraphAlgorithmPlugin } from "../types/graphAlgorithm";
+import type { SimulationSnapshot, StepEvent } from "../types/simulation";
 
 type SpeedRate = { label: string; ms: number };
+type EventFilter = "all" | "milestones" | "bookmarks";
 
 const SPEED_RATES: SpeedRate[] = [
-  { label: "0.75x", ms: 533 },
-  { label: "1x", ms: 400 },
-  { label: "1.5x", ms: 267 },
-  { label: "2x", ms: 200 },
+  { label: "Slow", ms: 533 },
+  { label: "Normal", ms: 400 },
+  { label: "Fast", ms: 267 },
+  { label: "Very Fast", ms: 200 },
 ];
 
 interface AlgorithmInfo {
@@ -19,10 +20,18 @@ interface AlgorithmInfo {
   keyIdea: string | null;
 }
 
+interface PendingPrediction {
+  step: StepEvent;
+  stepIndex: number;
+  selectedOption: string | null;
+  submitted: boolean;
+}
+
 interface ControlsProps {
-  algorithm: AlgorithmPlugin | ArrayAlgorithmPlugin;
-  snapshot: RunnerSnapshot | ArrayRunnerSnapshot;
+  algorithm: AlgorithmPlugin | ArrayAlgorithmPlugin | GraphAlgorithmPlugin;
+  snapshot: SimulationSnapshot;
   speed: number;
+  generateLabel?: string;
   onGenerate: () => void;
   onTogglePlayback: () => void;
   onReset: () => void;
@@ -36,12 +45,19 @@ interface ControlsProps {
   onSelectPreset?: (presetId: string) => void;
   milestoneSteps?: number[];
   algorithmInfo?: AlgorithmInfo;
+  predictMode: boolean;
+  pendingPrediction: PendingPrediction | null;
+  onTogglePredictMode: () => void;
+  onSelectPrediction: (option: string) => void;
+  onSubmitPrediction: () => void;
+  onRevealPrediction: () => void;
 }
 
 export function Controls({
   algorithm,
   snapshot,
   speed,
+  generateLabel,
   onGenerate,
   onTogglePlayback,
   onReset,
@@ -55,36 +71,69 @@ export function Controls({
   onSelectPreset,
   milestoneSteps = [],
   algorithmInfo,
+  predictMode,
+  pendingPrediction,
+  onTogglePredictMode,
+  onSelectPrediction,
+  onSubmitPrediction,
+  onRevealPrediction,
 }: ControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [debuggerOpen, setDebuggerOpen] = useState(false);
+  const [eventFilter, setEventFilter] = useState<EventFilter>("all");
+  const [bookmarkedSteps, setBookmarkedSteps] = useState<Set<number>>(() => new Set());
   const [hoverStep, setHoverStep] = useState<number | null>(null);
   const [tooltipX, setTooltipX] = useState(0);
   const seekBarRef = useRef<HTMLInputElement>(null);
+  const infoRef = useRef<HTMLDivElement>(null);
 
   const currentStep = snapshot.stepCount;
   const totalSteps = snapshot.totalSteps;
-  const generateLabel =
-    algorithm.family === "array"
-      ? "Load Example Array"
-      : "Generate Random Grid";
+  const resolvedGenerateLabel =
+    generateLabel ??
+    (algorithm.metadata.family === "array" ? "Load Example Array" : "Generate Random Grid");
   const previousDisabled = currentStep === 0;
   const resetDisabled = currentStep === 0 && snapshot.status !== "completed";
   const scrubDisabled = totalSteps <= 0;
   const scrubMax = Math.max(0, totalSteps);
   const scrubValue = scrubDisabled ? 0 : Math.min(currentStep, scrubMax);
-  const scrubProgress =
-    scrubMax > 0 ? Math.min(100, (currentStep / scrubMax) * 100) : 0;
+  const scrubProgress = scrubMax > 0 ? Math.min(100, (currentStep / scrubMax) * 100) : 0;
   const nextDisabled =
     snapshot.status === "running" ||
+    Boolean(pendingPrediction) ||
     (totalSteps > 0 && currentStep >= totalSteps);
   const isRunning = snapshot.status === "running";
-  const playPauseIcon = isRunning ? "⏸" : "▶";
-  const playPauseLabel = isRunning ? "Pause" : "Play";
-
+  const playPauseLabel = isRunning ? "Pause" : predictMode ? "Predict" : "Play";
   const speedLabel = nearestSpeedLabel(speed);
+  const predictionOptions = useMemo(
+    () =>
+      pendingPrediction?.step.prediction?.options ??
+      pendingPrediction?.step.decision?.options ??
+      [pendingPrediction?.step.explanation.what ?? "Reveal next step"],
+    [pendingPrediction],
+  );
+  const correctPrediction = pendingPrediction?.step.decision?.chosen ?? predictionOptions[0] ?? "";
+  const predictionIsCorrect =
+    pendingPrediction?.submitted &&
+    pendingPrediction.selectedOption !== null &&
+    pendingPrediction.selectedOption === correctPrediction;
+  const bookmarkedEventSteps = useMemo(
+    () => [...bookmarkedSteps].sort((first, second) => first - second),
+    [bookmarkedSteps],
+  );
+  const visibleDebuggerEvents = useMemo(() => {
+    if (eventFilter === "milestones") {
+      return snapshot.recentEvents.filter((event) => event.isMilestone);
+    }
 
-  // Hover preview for the seek bar
+    if (eventFilter === "bookmarks") {
+      return snapshot.recentEvents.filter((event) => bookmarkedSteps.has(event.index));
+    }
+
+    return snapshot.recentEvents;
+  }, [bookmarkedSteps, eventFilter, snapshot.recentEvents]);
+
   const handleSeekMouseMove = useCallback(
     (event: React.MouseEvent<HTMLInputElement>) => {
       const bar = event.currentTarget;
@@ -102,22 +151,28 @@ export function Controls({
     setHoverStep(null);
   }, []);
 
-  // Close info overlay when clicking outside
-  const infoRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!infoOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (infoRef.current && !infoRef.current.contains(e.target as Node)) {
+    if (!infoOpen) {
+      return;
+    }
+
+    const handler = (event: MouseEvent) => {
+      if (infoRef.current && !infoRef.current.contains(event.target as Node)) {
         setInfoOpen(false);
       }
     };
+
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [infoOpen]);
 
   const hasInfo =
-    algorithmInfo &&
-    (algorithmInfo.timeComplexity || algorithmInfo.spaceComplexity || algorithmInfo.keyIdea);
+    Boolean(
+      algorithmInfo &&
+        (algorithmInfo.timeComplexity ||
+          algorithmInfo.spaceComplexity ||
+          algorithmInfo.keyIdea),
+    );
 
   return (
     <section className="controls-panel controls-panel--enhanced media-player">
@@ -142,7 +197,6 @@ export function Controls({
             aria-valuenow={currentStep}
             aria-valuetext={`Step ${currentStep} of ${totalSteps}`}
           />
-          {/* Milestone markers */}
           {!scrubDisabled && scrubMax > 0 && milestoneSteps.length > 0 && (
             <div className="seek-bar__milestones" aria-hidden="true">
               {milestoneSteps.map((step) => (
@@ -155,7 +209,6 @@ export function Controls({
               ))}
             </div>
           )}
-          {/* Hover tooltip */}
           {hoverStep !== null && !scrubDisabled && (
             <div
               className="seek-bar__tooltip"
@@ -167,7 +220,7 @@ export function Controls({
           )}
         </div>
         <div className="media-player__time" aria-hidden="true">
-          <span>{currentStep}</span>
+          <span>Step {currentStep}</span>
           <span className="media-player__time-sep">/</span>
           <span>{totalSteps}</span>
         </div>
@@ -179,26 +232,48 @@ export function Controls({
             <button
               type="button"
               className={`media-player__settings-toggle ${settingsOpen ? "is-open" : ""}`}
-              onClick={() => { setSettingsOpen((open) => !open); setInfoOpen(false); }}
+              onClick={() => {
+                setSettingsOpen((open) => !open);
+                setInfoOpen(false);
+                setDebuggerOpen(false);
+              }}
               aria-expanded={settingsOpen}
               aria-controls="media-player-settings"
               aria-label={settingsOpen ? "Close settings" : "Open settings"}
               title="Settings"
             >
-              ⚙
+              Config
             </button>
             {hasInfo && (
               <button
                 type="button"
                 className={`media-player__info-toggle ${infoOpen ? "is-open" : ""}`}
-                onClick={() => { setInfoOpen((open) => !open); setSettingsOpen(false); }}
+                onClick={() => {
+                  setInfoOpen((open) => !open);
+                  setSettingsOpen(false);
+                  setDebuggerOpen(false);
+                }}
                 aria-expanded={infoOpen}
                 aria-label={infoOpen ? "Close algorithm info" : "Show algorithm info"}
                 title="Algorithm Info"
               >
-                ℹ
+                Info
               </button>
             )}
+            <button
+              type="button"
+              className={`media-player__info-toggle ${debuggerOpen ? "is-open" : ""}`}
+              onClick={() => {
+                setDebuggerOpen((open) => !open);
+                setSettingsOpen(false);
+                setInfoOpen(false);
+              }}
+              aria-expanded={debuggerOpen}
+              aria-label={debuggerOpen ? "Close event inspector" : "Show event inspector"}
+              title="Event Inspector"
+            >
+              Trace
+            </button>
           </div>
           {settingsOpen && (
             <div
@@ -207,16 +282,16 @@ export function Controls({
               role="region"
               aria-label="Playback settings"
             >
-              <p className="media-player__settings-title">{algorithm.label}</p>
+              <p className="media-player__settings-title">{algorithm.metadata.label}</p>
               <div className="media-player__aux">
                 <button
                   type="button"
                   className="media-player__text-btn"
                   onClick={onGenerate}
-                  title={generateLabel}
-                  aria-label={generateLabel}
+                  title={resolvedGenerateLabel}
+                  aria-label={resolvedGenerateLabel}
                 >
-                  {generateLabel}
+                  {resolvedGenerateLabel}
                 </button>
                 {onGenerateRandom && (
                   <button
@@ -258,7 +333,6 @@ export function Controls({
               </div>
             </div>
           )}
-          {/* Bento Box Info Overlay */}
           {infoOpen && algorithmInfo && (
             <div
               ref={infoRef}
@@ -286,6 +360,77 @@ export function Controls({
               )}
             </div>
           )}
+          {debuggerOpen && (
+            <div className="debugger-overlay" role="region" aria-label="Event inspector">
+              <div className="debugger-overlay__header">
+                <div>
+                  <span className="bento-card__label">Timeline Debugger</span>
+                  <strong>Step {currentStep} / {totalSteps}</strong>
+                </div>
+                <button
+                  type="button"
+                  className="debugger-overlay__bookmark"
+                  disabled={currentStep === 0}
+                  onClick={() => {
+                    setBookmarkedSteps((current) => {
+                      const next = new Set(current);
+                      if (next.has(currentStep)) {
+                        next.delete(currentStep);
+                      } else {
+                        next.add(currentStep);
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  {bookmarkedSteps.has(currentStep) ? "Unbookmark" : "Bookmark"}
+                </button>
+              </div>
+
+              <div className="debugger-overlay__quick-jumps">
+                {(["all", "milestones", "bookmarks"] as EventFilter[]).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={eventFilter === filter ? "is-active" : ""}
+                    onClick={() => setEventFilter(filter)}
+                  >
+                    {filter}
+                  </button>
+                ))}
+                {milestoneSteps.slice(0, 8).map((step) => (
+                  <button key={step} type="button" onClick={() => onSeek(step)}>
+                    M{step}
+                  </button>
+                ))}
+                {bookmarkedEventSteps.map((step) => (
+                  <button key={`bookmark-${step}`} type="button" onClick={() => onSeek(step)}>
+                    B{step}
+                  </button>
+                ))}
+              </div>
+
+              <div className="debugger-event-list">
+                {visibleDebuggerEvents.length === 0 ? (
+                  <p className="debugger-event-list__empty">Run or step once to inspect emitted events.</p>
+                ) : (
+                  visibleDebuggerEvents.map((event) => (
+                    <button
+                      type="button"
+                      key={`${event.index}-${event.type}`}
+                      className={`debugger-event ${event.index === currentStep ? "is-active" : ""}`}
+                      onClick={() => onSeek(event.index)}
+                    >
+                      <span>{event.index}</span>
+                      <strong>{event.type}</strong>
+                      <small>{event.summary}</small>
+                      {event.isMilestone && <em>milestone</em>}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="media-player__transport" role="group" aria-label="Playback">
@@ -297,7 +442,7 @@ export function Controls({
             title="Previous step"
             aria-label="Previous step"
           >
-            ⏮
+            Prev
           </button>
           <button
             type="button"
@@ -308,7 +453,7 @@ export function Controls({
             aria-label={playPauseLabel}
             aria-pressed={isRunning}
           >
-            {playPauseIcon}
+            {playPauseLabel}
           </button>
           <button
             type="button"
@@ -318,18 +463,27 @@ export function Controls({
             title="Next step"
             aria-label="Next step"
           >
-            ⏭
+            Next
           </button>
         </div>
 
         <div className="media-player__right">
+          <button
+            type="button"
+            className={`predict-toggle ${predictMode ? "is-active" : ""}`}
+            onClick={onTogglePredictMode}
+            aria-pressed={predictMode}
+            title="Predict next step"
+          >
+            Predict
+          </button>
           <label className="media-player__speed">
             <span className="visually-hidden">Playback speed</span>
             <select
               className="control-select media-player__speed-select"
               value={speedLabel}
               onChange={(event) => {
-                const next = SPEED_RATES.find((r) => r.label === event.target.value);
+                const next = SPEED_RATES.find((rate) => rate.label === event.target.value);
                 if (next) {
                   onSpeedChange(next.ms);
                 }
@@ -344,6 +498,108 @@ export function Controls({
           </label>
         </div>
       </div>
+
+      {pendingPrediction && (
+        <section className="prediction-panel" aria-label="Predict next step">
+          <div className="prediction-panel__copy">
+            <span className="teaching-panel__label">Predict Step {pendingPrediction.stepIndex}</span>
+            <strong>
+              {pendingPrediction.step.prediction?.question ?? "What should happen next?"}
+            </strong>
+            {pendingPrediction.submitted && (
+              <p className={predictionIsCorrect ? "is-correct" : "is-missed"}>
+                {predictionIsCorrect
+                  ? "Correct. Now reveal the event and connect it to the state change."
+                  : `Close, but the engine will choose: ${correctPrediction}.`}
+              </p>
+            )}
+          </div>
+
+          <div className="prediction-options" role="group" aria-label="Prediction options">
+            {predictionOptions.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={option === pendingPrediction.selectedOption ? "is-selected" : ""}
+                onClick={() => onSelectPrediction(option)}
+                disabled={pendingPrediction.submitted}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+
+          <div className="prediction-panel__actions">
+            <button
+              type="button"
+              className="media-player__text-btn"
+              onClick={onSubmitPrediction}
+              disabled={!pendingPrediction.selectedOption || pendingPrediction.submitted}
+            >
+              Check
+            </button>
+            <button type="button" className="media-player__text-btn" onClick={onRevealPrediction}>
+              Reveal Step
+            </button>
+          </div>
+        </section>
+      )}
+
+      {(snapshot.explanation || snapshot.decision || snapshot.insightTags.length > 0) && (
+        <div className="teaching-strip" aria-label="Step reasoning">
+          {snapshot.explanation && (
+            <section className="teaching-panel teaching-panel--explanation">
+              <div>
+                <span className="teaching-panel__label">What</span>
+                <p>{snapshot.explanation.what}</p>
+              </div>
+              <div>
+                <span className="teaching-panel__label">Why</span>
+                <p>{snapshot.explanation.why}</p>
+              </div>
+              <div>
+                <span className="teaching-panel__label">Impact</span>
+                <p>{snapshot.explanation.impact}</p>
+              </div>
+              {snapshot.explanation.next && (
+                <div>
+                  <span className="teaching-panel__label">Next</span>
+                  <p>{snapshot.explanation.next}</p>
+                </div>
+              )}
+            </section>
+          )}
+
+          {snapshot.decision && (
+            <section className="teaching-panel teaching-panel--decision">
+              <span className="teaching-panel__label">Decision</span>
+              <strong>{snapshot.decision.chosen}</strong>
+              <p>{snapshot.decision.reasoning}</p>
+              <div className="teaching-options">
+                {snapshot.decision.options.map((option) => (
+                  <span
+                    key={option}
+                    className={option === snapshot.decision?.chosen ? "is-chosen" : ""}
+                  >
+                    {option}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {snapshot.insightTags.length > 0 && (
+            <section className="teaching-panel teaching-panel--insights">
+              <span className="teaching-panel__label">Insight</span>
+              <div className="insight-tags">
+                {snapshot.insightTags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
     </section>
   );
 }

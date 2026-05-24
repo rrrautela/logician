@@ -1,9 +1,11 @@
 import type { AlgorithmPlugin } from "../types/algorithm";
 import type { ArrayAlgorithmPlugin } from "../types/arrayAlgorithm";
+import type { GraphAlgorithmPlugin } from "../types/graphAlgorithm";
 
 interface SidebarProps {
   gridAlgorithms: AlgorithmPlugin[];
   arrayAlgorithms: ArrayAlgorithmPlugin[];
+  graphAlgorithms: GraphAlgorithmPlugin[];
   selectedId: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -13,6 +15,7 @@ interface SidebarProps {
 export function Sidebar({
   gridAlgorithms,
   arrayAlgorithms,
+  graphAlgorithms,
   selectedId,
   collapsed,
   onToggleCollapse,
@@ -49,8 +52,8 @@ export function Sidebar({
                   }`}
                   onClick={() => onSelectAlgorithm(algorithm.id)}
                 >
-                  <span>{algorithm.label}</span>
-                  <small>{algorithm.family}</small>
+                  <span>{algorithm.metadata.label}</span>
+                  <small>{algorithm.metadata.family}</small>
                 </button>
               ))}
             </div>
@@ -68,8 +71,27 @@ export function Sidebar({
                   }`}
                   onClick={() => onSelectAlgorithm(algorithm.id)}
                 >
-                  <span>{algorithm.label}</span>
-                  <small>{algorithm.family}</small>
+                  <span>{algorithm.metadata.label}</span>
+                  <small>{algorithm.metadata.family}</small>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {graphAlgorithms.length > 0 && (
+            <div className="sidebar__group">
+              <p className="sidebar__label">Graph Algorithms</p>
+              {graphAlgorithms.map((algorithm) => (
+                <button
+                  key={algorithm.id}
+                  type="button"
+                  className={`sidebar__item ${
+                    selectedId === algorithm.id ? "active" : ""
+                  }`}
+                  onClick={() => onSelectAlgorithm(algorithm.id)}
+                >
+                  <span>{algorithm.metadata.label}</span>
+                  <small>{algorithm.metadata.family}</small>
                 </button>
               ))}
             </div>

@@ -1,38 +1,50 @@
 import type { Cell, Coordinate } from "./grid";
+import type {
+  AlgorithmPlugin as BaseAlgorithmPlugin,
+  SimulationResult,
+  StateDiff,
+  StepEvent,
+} from "./simulation";
 
-export type StepType =
-  | "visit"
-  | "enqueue"
-  | "path"
-  | "backtrack"
-  | "fail";
+export type GridEventType = "visit" | "enqueue" | "path" | "backtrack" | "fail";
 
-export interface AlgorithmStep {
-  type: StepType;
-  node?: Coordinate;
-  nodes?: Coordinate[];
-  wave?: number;
+export interface GridEventPayload {
+  nodes: Coordinate[];
   stepNumber?: number;
+  wave?: number;
 }
 
-export interface AlgorithmResult {
-  found: boolean;
+export type GridStepEvent = StepEvent<
+  GridEventType,
+  GridEventPayload,
+  { current?: Coordinate[] }
+>;
+
+export interface GridCellPatch {
+  row: number;
+  col: number;
+  changes: Partial<
+    Pick<
+      Cell,
+      "visited" | "queued" | "path" | "cycle" | "current" | "backtracked" | "failed" | "stepNumber"
+    >
+  >;
+}
+
+export type GridStateDiff = StateDiff<
+  "grid_patch",
+  {
+    patches: GridCellPatch[];
+  }
+>;
+
+export interface GridAlgorithmResult extends SimulationResult {
   path: Coordinate[];
   visitedCount: number;
-  terminated: boolean;
-  message?: string;
-  metricValue?: number;
 }
 
-export interface AlgorithmPlugin {
-  id: string;
-  label: string;
-  family: string;
-  description: string;
-  behaviorNote: string;
-  metricLabel?: string;
-  timeComplexity?: string;
-  spaceComplexity?: string;
-  keyIdea?: string;
-  run(grid: Cell[][]): Generator<AlgorithmStep, AlgorithmResult, void>;
-}
+export type AlgorithmPlugin = BaseAlgorithmPlugin<
+  Cell[][],
+  GridStepEvent,
+  GridAlgorithmResult
+>;

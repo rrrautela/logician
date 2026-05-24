@@ -1,7 +1,7 @@
 import type {
   AlgorithmPlugin,
-  AlgorithmResult,
-  AlgorithmStep,
+  GridAlgorithmResult,
+  GridStepEvent,
 } from "../types/algorithm";
 import type { Cell, Coordinate } from "../types/grid";
 import { findCellByType, getNeighbors, sameCoordinate } from "../utils/grid";
@@ -27,23 +27,25 @@ function reconstructPath(
 
 export const bfsAlgorithm: AlgorithmPlugin = {
   id: "bfs",
-  label: "Breadth-First Search",
-  family: "Maze Traversal",
-  description:
-    "Queue-driven exploration that guarantees the shortest path on an unweighted grid.",
-  behaviorNote:
-    "BFS terminates when the queue is exhausted, even if no path exists. Each playback tick paints one full frontier layer.",
-  timeComplexity: "O(V + E)",
-  spaceComplexity: "O(V)",
-  keyIdea: "Explore all neighbors at the current depth before moving deeper. Guarantees the shortest path in an unweighted graph.",
-  *run(grid: Cell[][]): Generator<AlgorithmStep, AlgorithmResult, void> {
+  metadata: {
+    label: "Breadth-First Search",
+    family: "Maze Traversal",
+    description:
+      "Queue-driven exploration that guarantees the shortest path on an unweighted grid.",
+    behaviorNote:
+      "BFS terminates when the queue is exhausted, even if no path exists. Each playback tick paints one full frontier layer.",
+    timeComplexity: "O(V + E)",
+    spaceComplexity: "O(V)",
+    keyIdea:
+      "Explore all neighbors at the current depth before moving deeper. Guarantees the shortest path in an unweighted graph.",
+    metricLabel: "Path Length",
+  },
+  *execute(grid: Cell[][]): Generator<GridStepEvent, GridAlgorithmResult, void> {
     const start = findCellByType(grid, "start");
     const end = findCellByType(grid, "end");
     const queue: Array<[number, number, number]> = [[start[0], start[1], 1]];
     const visited = new Set<string>([coordinateKey(start)]);
-    const parentMap = new Map<string, Coordinate | null>([
-      [coordinateKey(start), null],
-    ]);
+    const parentMap = new Map<string, Coordinate | null>([[coordinateKey(start), null]]);
     let visitedCount = 0;
 
     while (queue.length > 0) {
@@ -51,9 +53,28 @@ export const bfsAlgorithm: AlgorithmPlugin = {
       visitedCount += layer.length;
       yield {
         type: "visit",
-        nodes: layer.map(([row, col]) => [row, col]),
-        wave: layer.length,
-        stepNumber: layer[0]?.[2] ?? 1,
+        payload: {
+          nodes: layer.map(([row, col]) => [row, col]),
+          wave: layer.length,
+          stepNumber: layer[0]?.[2] ?? 1,
+        },
+        pointers: {
+          current: layer.map(([row, col]) => [row, col] as Coordinate),
+        },
+        explanation: {
+          what: layer.length > 1
+            ? `Visit the current frontier layer of ${layer.length} cells.`
+            : "Visit the next closest cell to the start.",
+          why: "BFS processes all cells at one distance before moving deeper.",
+          impact: "These cells are now marked visited and can seed the next frontier.",
+          next: "Check whether the goal is in this layer, then enqueue unvisited neighbors.",
+        },
+        decision: {
+          options: ["Process current layer", "Dive into one branch"],
+          chosen: "Process current layer",
+          reasoning: "Layer order is what guarantees shortest paths on an unweighted grid.",
+        },
+        insightTags: ["Breadth-first layer", "Shortest unweighted path"],
       };
 
       const reachedEnd = layer.find(([row, col]) => sameCoordinate([row, col], end));
@@ -62,8 +83,22 @@ export const bfsAlgorithm: AlgorithmPlugin = {
         for (const [index, node] of path.entries()) {
           yield {
             type: "path",
-            node,
-            stepNumber: path.length - index,
+            payload: {
+              nodes: [node],
+              stepNumber: path.length - index,
+            },
+            pointers: { current: [node] },
+            explanation: {
+              what: "Reveal one cell from the reconstructed shortest path.",
+              why: "The goal was reached in BFS layer order, so parent links trace a shortest route.",
+              impact: "The path highlight grows backward from the goal to the start.",
+            },
+            decision: {
+              options: ["Reconstruct parent path", "Continue exploring"],
+              chosen: "Reconstruct parent path",
+              reasoning: "The first time BFS reaches the goal is already shortest in an unweighted grid.",
+            },
+            insightTags: ["Parent reconstruction", "Shortest path complete"],
           };
         }
 
@@ -72,6 +107,8 @@ export const bfsAlgorithm: AlgorithmPlugin = {
           path: [...path].reverse(),
           visitedCount,
           terminated: true,
+          message: "BFS found the shortest path across the grid.",
+          metricValue: path.length,
         };
       }
 
@@ -94,6 +131,8 @@ export const bfsAlgorithm: AlgorithmPlugin = {
       path: [],
       visitedCount,
       terminated: true,
+      message: "BFS exhausted the reachable grid without finding the end.",
+      metricValue: 0,
     };
   },
 };
